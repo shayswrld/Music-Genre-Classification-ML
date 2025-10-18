@@ -1,0 +1,102 @@
+# FMA Dataset Files - Exclude large metadata files
+*.csv
+*.zip
+
+# FMA metadata directory
+fma_metadata/
+fma_metadata.zip
+
+# Specific FMA files
+tracks.csv
+features.csv
+genres.csv
+echonest.csv
+raw_*.csv
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# Environment variables
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Logs
+*.log
+
+# Audio files (if any)
+*.mp3
+*.wav
+*.flac
+*.m4a
+
+# Large data files
+*.pickle
+*.pkl
+*.h5
+*.hdf5
+
+# Model files
+*.model
+*.joblib
