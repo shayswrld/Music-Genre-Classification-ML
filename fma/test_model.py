@@ -6,8 +6,8 @@ Loads a trained PyTorch model and evaluates it on test data.
 Automatically infers model architecture from the .pth file and provides
 comprehensive evaluation metrics.
 """
-
 import torch
+from torch.utils.data import DataLoader, TensorDataset
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
@@ -15,10 +15,11 @@ import os
 import sys
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, precision_recall_fscore_support
 from sklearn.preprocessing import StandardScaler
-from torch.utils.data import DataLoader, TensorDataset
+
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from data_loader import FMADataLoader
+from joblib import load as joblib_load
 
 
 # ============================================================================
@@ -26,8 +27,8 @@ from data_loader import FMADataLoader
 # ============================================================================
 
 CONFIG = {
-    'model_path': 'best_model.pth',           # Path to your trained model
-    'metadata_path': '../fma_metadata',        # Path to FMA metadata directory
+    'model_path': '../artifacts/baseline_logreg_C0.1.joblib',           # Path to your trained model
+    'metadata_path': 'data/fma_metadata',        # Path to FMA metadata directory
     'test_subset': 'large',                   # Dataset subset: 'small', 'medium', or 'large'
     'num_test_samples': 100000,                  # Number of samples to test
     'batch_size': 32,                          # Batch size for evaluation
@@ -102,6 +103,60 @@ def evaluate_model(model, data_loader, device='cpu'):
             all_labels.extend(batch_labels.cpu().numpy())
     
     return np.array(all_predictions), np.array(all_probabilities), np.array(all_labels)
+
+def evaluate_sklearn_joblib(model_path, metadata_dir, subset, n):
+    """
+    Evaluate a scikit-learn .joblib baseline on the authors' split
+    using train-standardization from FMADataLoader.get_train_test_split().
+    """
+    print("=" * 60)
+    print("LOADING SKLEARN MODEL")
+    print("=" * 60)
+    clf = joblib_load(model_path)
+    print(f"✓ Loaded sklearn model: {type(clf).__name__}")
+
+    print("\n" + "=" * 60)
+    print("LOADING TEST DATA (authors' split; standardized by TRAIN stats)")
+    print("=" * 60)
+
+    loader = FMADataLoader(metadata_dir)
+    split = loader.get_train_test_split(
+        n=n,
+        subset=subset,
+        feature_columns=None,
+        multi_label=False,
+        include_echonest=False,
+        standardize=True,       # fit scaler on TRAIN, apply to VAL/TEST
+        shuffle_data=False
+    )
+
+    X_test, y_test = split['X_test'], split['y_test']
+    genre_names = split['genre_names']
+    print(f"Test shape: {X_test.shape}, #genres: {len(genre_names)}")
+
+    y_pred = clf.predict(X_test)
+    # For probability-based metrics / confidence analysis (if available)
+    try:
+        y_probs = clf.predict_proba(X_test)
+    except Exception:
+        y_probs = None
+
+    # Metrics (macro for fairness across classes)
+    acc = accuracy_score(y_test, y_pred)
+    pr, rc, f1, _ = precision_recall_fscore_support(
+        y_test, y_pred, average='macro', zero_division=0
+    )
+
+    print("\n" + "=" * 60)
+    print("SKLEARN BASELINE RESULTS (TEST)")
+    print("=" * 60)
+    print(f"Accuracy:  {acc:.4f}")
+    print(f"Macro F1:  {f1:.4f}")
+    print(f"Precision: {pr:.4f}")
+    print(f"Recall:    {rc:.4f}")
+
+    cm = confusion_matrix(y_test, y_pred, labels=np.arange(len(genre_names)))
+    print("Confusion matrix shape:", cm.shape)
 
 
 def print_classification_metrics(y_true, y_pred, y_probs, genre_names):
@@ -334,167 +389,94 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("MUSIC GENRE CLASSIFIER - MODEL TESTING")
     print("=" * 60)
-    
-    # Load the model
-    model_path = os.path.join(os.path.dirname(__file__), "best_model.pth")
+
+    # Resolve model path from CONFIG (fallback to best_model.pth)
+    cfg_model_path = CONFIG.get('model_path', 'best_model.pth')
+    model_path = os.path.join(os.path.dirname(__file__), cfg_model_path)
+
+    # If it's a scikit-learn baseline (.joblib), evaluate and exit
+    if model_path.endswith(".joblib"):
+        evaluate_sklearn_joblib(
+            model_path=model_path,
+            metadata_dir=CONFIG.get('metadata_path', 'data/fma_metadata'),
+            subset=CONFIG.get('test_subset', 'large'),
+            n=CONFIG.get('num_test_samples', 100000),
+        )
+        sys.exit(0)
+
+    # -------- PyTorch path --------
+    # Load model
+
     loaded_model, loaded_data = load_model(model_path)
-    
-    # Print model summary
     print_model_summary(loaded_model, loaded_data)
-    
-    # Load test data
+
+    # Load test data USING AUTHORS' SPLIT + TRAIN STANDARDIZATION
     print("\n" + "=" * 60)
     print("LOADING TEST DATA")
     print("=" * 60)
-    
-    loader = FMADataLoader("../fma_metadata")
 
-    print(f"\nLoading test tracks from {CONFIG['test_subset']} subset...")
-    test_data = loader.get_first_n_tracks(
-        n=CONFIG['num_test_samples'], 
-        subset=CONFIG['test_subset'],
-        feature_columns=None, 
-        multi_label=False, 
-        include_echonest=False
+    loader = FMADataLoader(CONFIG.get('metadata_path', 'data/fma_metadata'))
+    split = loader.get_train_test_split(
+        n=CONFIG.get('num_test_samples', 100000),
+        subset=CONFIG.get('test_subset', 'large'),
+        feature_columns=None,
+        multi_label=False,
+        include_echonest=False,
+        standardize=True,     # fit scaler on TRAIN; transform VAL/TEST
+        shuffle_data=False
     )
-    
-    X_test = test_data['X']
-    y_test = test_data['y']
-    test_genre_names = test_data['genre_names']
-    
+    X_test = split['X_test']
+    y_test = split['y_test']
+    genre_names = split.get('genre_names', None)
+
     print(f"\nTest Data Loaded:")
-    print(f"  Number of samples: {X_test.shape[0]}")
-    print(f"  Number of features: {X_test.shape[1]}")
-    print(f"  Number of genres: {len(test_genre_names)}")
-    print(f"  Genres: {test_genre_names}")
-    
-    # Get the model's training genre labels if available
-    if 'genre_names' in loaded_data:
-        model_genre_names = loaded_data['genre_names']
-        print(f"\nModel was trained on {len(model_genre_names)} genres:")
-        print(f"  {model_genre_names}")
-    else:
-        # Model file doesn't have genre names, but we know it was trained on 16 genres from 'medium' subset
-        print(f"\nNo genre names in model file. Assuming model was trained on 16 genres from 'medium' subset.")
-        model_genre_names = ['Blues', 'Classical', 'Country', 'Easy Listening', 'Electronic', 
-                            'Experimental', 'Folk', 'Hip-Hop', 'Instrumental', 'International', 
-                            'Jazz', 'Old-Time / Historic', 'Pop', 'Rock', 'Soul-RnB', 'Spoken']
-        print(f"  {model_genre_names}")
-        
-        # Verify this matches the model's output size
-        if len(model_genre_names) != loaded_model.num_classes:
-            print(f"\nWARNING: Genre count mismatch!")
-            print(f"  Assumed genres: {len(model_genre_names)}")
-            print(f"  Model output size: {loaded_model.num_classes}")
-    
-    # Check if test genres match model genres
-    if test_genre_names != model_genre_names:
-        print(f"\n{'!'*60}")
-        print("WARNING: Genre mismatch detected!")
-        print(f"{'!'*60}")
-        print(f"Test data has {len(test_genre_names)} genres but model expects {len(model_genre_names)} genres")
-        print("\nThis mismatch will cause incorrect predictions!")
-        print("The model needs data with the same genre labels it was trained on.")
-        
-        # Try to create a mapping
-        print("\nAttempting to filter and remap genres...")
-        
-        # Find which test genres are in the model's training genres
-        valid_indices = []
-        genre_mapping = {}  # Maps test label index to model label index
-        
-        for test_idx, test_genre in enumerate(test_genre_names):
-            if test_genre in model_genre_names:
-                model_idx = model_genre_names.index(test_genre)
-                genre_mapping[test_idx] = model_idx
-                print(f"  Test genre '{test_genre}' (idx {test_idx}) -> Model genre (idx {model_idx})")
-        
-        # Filter test data to only include samples with matching genres
-        print(f"\nFiltering test data to only include matching genres...")
-        original_size = len(y_test)
-        
-        # Create mask for valid samples
-        valid_mask = np.isin(y_test, list(genre_mapping.keys()))
-        X_test = X_test[valid_mask]
-        y_test_old = y_test[valid_mask]
-        
-        # Remap labels to model's genre indices
-        y_test = np.array([genre_mapping[label] for label in y_test_old])
-        
-        print(f"  Filtered from {original_size} to {len(y_test)} samples")
-        print(f"  Using {len(genre_mapping)} matching genres")
-        
-        # Debug: show some remapped labels
-        print(f"\nDebug - Sample label remapping:")
-        for i in range(min(5, len(y_test_old))):
-            old_label = y_test_old[i]
-            new_label = y_test[i]
-            old_genre = test_genre_names[old_label]
-            new_genre = model_genre_names[new_label]
-            print(f"  Sample {i}: {old_label} ('{old_genre}') -> {new_label} ('{new_genre}')")
-        
-        # Use model's genre names for evaluation
-        genre_names = model_genre_names
-    else:
-        print("\nGenre labels match! Test data and model use the same genres.")
-        genre_names = test_genre_names
-    
-    # Verify feature dimensions match
-    if X_test.shape[1] != loaded_model.input_size:
-        print(f"\nWARNING: Feature dimension mismatch!")
-        print(f"  Model expects: {loaded_model.input_size} features")
-        print(f"  Data has: {X_test.shape[1]} features")
-    
-    print(f"\nFinal Test Set:")
-    print(f"  Number of samples: {X_test.shape[0]}")
-    print(f"  Number of features: {X_test.shape[1]}")
-    print(f"  Number of genres: {len(genre_names)}")
-    
-    # Assuming the model was trained on standardized features (mean=0, std=1)
-    print("Applying standardization to test data...")
-    
-    scaler = StandardScaler()
-    X_test_standardized = scaler.fit_transform(X_test)
-    
-    print(f"\nBefore standardization:")
-    print(f"  Mean: {X_test.mean():.6f}, Std: {X_test.std():.6f}")
-    print(f"After standardization:")
-    print(f"  Mean: {X_test_standardized.mean():.6f}, Std: {X_test_standardized.std():.6f}")
-    
-    # Use standardized data
-    X_test = X_test_standardized
-    
-    # Convert to PyTorch tensors
+    print(f"  Number of samples:  {X_test.shape[0]}")
+    print(f"  Number of features:  {X_test.shape[1]}")
+    if genre_names is not None:
+        print(f"  Number of genres:    {len(genre_names)}")
+        print(f"  Genres: {genre_names}")
+
+    # Optional sanity checks vs model metadata
+    if hasattr(loaded_model, "num_classes") and genre_names is not None:
+        if len(genre_names) != loaded_model.num_classes:
+            print("\nWARNING: Genre count mismatch between data and model.")
+            print(f"  Data genres:  {len(genre_names)}")
+            print(f"  Model outputs:{loaded_model.num_classes}")
+
+    if hasattr(loaded_model, "input_size") and X_test.shape[1] != loaded_model.input_size:
+        print("\nWARNING: Feature dimension mismatch between data and model.")
+        print(f"  Data features:   {X_test.shape[1]}")
+        print(f"  Model expects:   {loaded_model.input_size}")
+
+    # Convert to tensors (already standardized by TRAIN stats)
     print("\nPreparing data for evaluation...")
     x_test_tensor = torch.FloatTensor(X_test)
     y_test_tensor = torch.LongTensor(y_test)
-    
-    # Create data loader
-    batch_size = 32
+
+    batch_size = CONFIG.get('batch_size', 32)
     test_dataset = TensorDataset(x_test_tensor, y_test_tensor)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-    
-    # Evaluate the model
+
+    # Evaluate
     print("\n" + "=" * 60)
     print("EVALUATING MODEL ON TEST DATA")
     print("=" * 60)
-    
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"\nUsing device: {device}")
-    
+
     loaded_model.to(device)
     loaded_model.eval()
-    
+
     print("Running predictions...")
     y_pred, y_probs, y_true = evaluate_model(loaded_model, test_loader, device)
-    
-    # Print all metrics and results
+
+    # Metrics / outputs (reuse your existing helpers)
     metrics = print_classification_metrics(y_true, y_pred, y_probs, genre_names)
     cm = print_confusion_matrix(y_true, y_pred, genre_names)
     print_sample_predictions(y_true, y_pred, y_probs, genre_names, num_samples=20)
     analyze_prediction_confidence(y_true, y_pred, y_probs)
-    
-    # Final summary
+
     print("\n" + "=" * 60)
     print("TEST COMPLETE - SUMMARY")
     print("=" * 60)
@@ -503,5 +485,3 @@ if __name__ == "__main__":
     print(f"  Accuracy: {metrics['accuracy']:.4f} ({metrics['accuracy']*100:.2f}%)")
     print(f"  Macro F1-Score: {metrics['f1_macro']:.4f}")
     print(f"  Weighted F1-Score: {metrics['f1_weighted']:.4f}")
-    
-
